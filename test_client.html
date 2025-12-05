@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zylin Voice Agent - Test Call</title>
+    <script src="https://unpkg.com/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 15px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #667eea;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .config {
+            background: #f5f7fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #333;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e1e8ed;
+            border-radius: 8px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            width: 100%;
+            padding: 15px;
+            font-size: 16px;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 10px;
+        }
+        #connectBtn {
+            background: #667eea;
+            color: white;
+        }
+        #connectBtn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        #disconnectBtn {
+            background: #f56565;
+            color: white;
+            display: none;
+        }
+        #disconnectBtn:hover {
+            background: #e53e3e;
+        }
+        button:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-weight: 500;
+        }
+        .status.info { background: #bee3f8; color: #2c5282; }
+        .status.success { background: #c6f6d5; color: #22543d; }
+        .status.error { background: #fed7d7; color: #742a2a; }
+        .status.warning { background: #feebc8; color: #7c2d12; }
+        #transcript {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f7fafc;
+            border-radius: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+        }
+        .transcript-item {
+            padding: 10px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+            background: white;
+            border-radius: 5px;
+        }
+        .transcript-item.agent {
+            border-left-color: #48bb78;
+        }
+        .mic-indicator {
+            text-align: center;
+            margin: 20px 0;
+            display: none;
+        }
+        .mic-icon {
+            font-size: 48px;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Zylin Voice Agent</h1>
+        <p class="subtitle">Test your AI voice assistant</p>
+        
+        <div class="config">
+            <div class="form-group">
+                <label for="livekitUrl">LiveKit Server URL</label>
+                <input type="text" id="livekitUrl" value="wss://zylin-te8ckpxb.livekit.cloud" placeholder="wss://your-livekit-server.com">
+            </div>
+            <div class="form-group">
+                <label for="apiKey">API Key</label>
+                <input type="text" id="apiKey" value="APIj99MK6WwSDB3" placeholder="Your LiveKit API Key">
+            </div>
+            <div class="form-group">
+                <label for="apiSecret">API Secret</label>
+                <input type="password" id="apiSecret" value="EsX0Zcn1Lo6SRnQrpVRy0tkWNDEebfascDu8uf3lC3qA" placeholder="Your LiveKit API Secret">
+            </div>
+            <div class="form-group">
+                <label for="roomName">Room Name</label>
+                <input type="text" id="roomName" value="test-room-001" placeholder="Enter room name">
+            </div>
+        </div>
+        
+        <button id="connectBtn" onclick="connect()">🚀 Start Call</button>
+        <button id="disconnectBtn" onclick="disconnect()">📞 End Call</button>
+        
+        <div class="mic-indicator" id="micIndicator">
+            <div class="mic-icon">🎤</div>
+            <p>Listening... Speak now!</p>
+        </div>
+        
+        <div id="status"></div>
+        <div id="transcript"></div>
+    </div>
+
+    <script>
+        let room = null;
+        let localTrack = null;
+
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+        }
+
+        function addTranscript(text, isAgent = false) {
+            const transcriptDiv = document.getElementById('transcript');
+            transcriptDiv.style.display = 'block';
+            
+            const item = document.createElement('div');
+            item.className = `transcript-item ${isAgent ? 'agent' : 'user'}`;
+            item.innerHTML = `<strong>${isAgent ? '🤖 Agent' : '👤 You'}:</strong> ${text}`;
+            transcriptDiv.appendChild(item);
+            transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+        }
+
+        async function generateToken(roomName, participantName) {
+            const apiKey = document.getElementById('apiKey').value;
+            const apiSecret = document.getElementById('apiSecret').value;
+            
+            // For production, generate token on your server
+            // For testing, we'll use a simple token generation
+            const tokenUrl = `https://api.livekit.io/token`;
+            
+            // Since browser can't directly create JWT, use LiveKit's AccessToken API
+            // or your backend to generate token
+            // For now, we'll connect with just the credentials
+            showStatus('⚠️ Note: In production, generate tokens server-side', 'warning');
+            
+            return null; // Will use grants directly
+        }
+
+        async function connect() {
+            try {
+                const connectBtn = document.getElementById('connectBtn');
+                const disconnectBtn = document.getElementById('disconnectBtn');
+                const micIndicator = document.getElementById('micIndicator');
+                
+                connectBtn.disabled = true;
+                showStatus('🔌 Connecting to LiveKit room...', 'info');
+                
+                const url = document.getElementById('livekitUrl').value;
+                const roomName = document.getElementById('roomName').value;
+                const apiKey = document.getElementById('apiKey').value;
+                const apiSecret = document.getElementById('apiSecret').value;
+                
+                // Create room
+                room = new LivekitClient.Room({
+                    adaptiveStream: true,
+                    dynacast: true,
+                });
+                
+                // Set up event listeners
+                room.on(LivekitClient.RoomEvent.Connected, () => {
+                    showStatus('✅ Connected! You can now speak to the agent.', 'success');
+                    micIndicator.style.display = 'block';
+                    connectBtn.style.display = 'none';
+                    disconnectBtn.style.display = 'block';
+                });
+                
+                room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
+                    if (track.kind === LivekitClient.Track.Kind.Audio) {
+                        const audioElement = track.attach();
+                        document.body.appendChild(audioElement);
+                        showStatus('🔊 Agent audio connected', 'success');
+                    }
+                });
+                
+                room.on(LivekitClient.RoomEvent.DataReceived, (payload, participant) => {
+                    try {
+                        const data = JSON.parse(new TextDecoder().decode(payload));
+                        if (data.type === 'transcript') {
+                            addTranscript(data.text, false);
+                        } else if (data.type === 'agent_response') {
+                            addTranscript(data.text, true);
+                        }
+                    } catch (e) {
+                        console.error('Error parsing data:', e);
+                    }
+                });
+                
+                room.on(LivekitClient.RoomEvent.Disconnected, () => {
+                    showStatus('📴 Disconnected from room', 'info');
+                    cleanup();
+                });
+                
+                // Generate token (in production, do this server-side)
+                // For testing, we'll connect directly
+                const token = await fetch(`${url}/token`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        api_key: apiKey,
+                        api_secret: apiSecret,
+                        room_name: roomName,
+                        participant_name: 'test-caller-' + Date.now(),
+                        ttl: 3600
+                    })
+                }).catch(() => null);
+                
+                let authToken;
+                if (token && token.ok) {
+                    const data = await token.json();
+                    authToken = data.token;
+                } else {
+                    // Fallback: use a simple token structure (requires server setup)
+                    showStatus('⚠️ Using direct connection. For production, implement proper token generation.', 'warning');
+                    // This won't work without proper token - showing as example
+                    throw new Error('Token generation required. Please set up a token server or use LiveKit Cloud console.');
+                }
+                
+                // Connect to room
+                await room.connect(url, authToken);
+                
+                // Get microphone permission and publish
+                localTrack = await LivekitClient.createLocalAudioTrack({
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                });
+                
+                await room.localParticipant.publishTrack(localTrack);
+                showStatus('🎤 Microphone active - speak to the agent!', 'success');
+                
+            } catch (error) {
+                showStatus(`❌ Error: ${error.message}`, 'error');
+                console.error('Connection error:', error);
+                connectBtn.disabled = false;
+                
+                // Show helpful message
+                if (error.message.includes('Token')) {
+                    showStatus(`❌ Token Error: Please generate a token using LiveKit CLI or your backend. 
+                    
+Run: livekit-cli token create --api-key ${document.getElementById('apiKey').value} --api-secret ${document.getElementById('apiSecret').value} --room ${document.getElementById('roomName').value} --identity test-caller --valid-for 1h`, 'error');
+                }
+            }
+        }
+
+        async function disconnect() {
+            if (room) {
+                await room.disconnect();
+            }
+            cleanup();
+        }
+
+        function cleanup() {
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            const micIndicator = document.getElementById('micIndicator');
+            
+            if (localTrack) {
+                localTrack.stop();
+                localTrack = null;
+            }
+            
+            room = null;
+            connectBtn.style.display = 'block';
+            connectBtn.disabled = false;
+            disconnectBtn.style.display = 'none';
+            micIndicator.style.display = 'none';
+        }
+    </script>
+</body>
+</html>

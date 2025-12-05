@@ -296,8 +296,14 @@ class WhisperSTTAdapter(STTAdapter):
         """Stream transcript results"""
         while True:
             try:
-                result = await self.transcript_queue.get()
+                result = await asyncio.wait_for(
+                    self.transcript_queue.get(),
+                    timeout=300.0  # 5 minutes timeout for persistent agent
+                )
                 yield result
+            except asyncio.TimeoutError:
+                # No transcripts for 5 minutes, continue waiting
+                continue
             except Exception as e:
                 self.logger.error("transcript_stream_error", error=str(e))
                 break
@@ -376,14 +382,19 @@ class MockSTTAdapter(STTAdapter):
     
     async def get_transcript_stream(self) -> AsyncIterator[TranscriptResult]:
         """Stream mock transcripts"""
+        empty_count = 0
         while True:
             try:
                 result = await asyncio.wait_for(
                     self.transcript_queue.get(),
-                    timeout=5.0
+                    timeout=1.0
                 )
+                empty_count = 0  # Reset counter on successful get
                 yield result
             except asyncio.TimeoutError:
+                empty_count += 1
+                if empty_count >= 3:  # Stop after 3 seconds of no data
+                    break
                 continue
             except Exception as e:
                 self.logger.error("mock_stream_error", error=str(e))

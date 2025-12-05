@@ -29,9 +29,9 @@ async def test_system():
     call_record = create_call_record(session, call_id, "test-room", "active")
     print(f"✅ Created call record: {call_id}")
     
-    # Initialize mock adapters
+    # Initialize mock adapters with predefined responses
     livekit = MockLiveKitClient(call_id=call_id)
-    stt = MockSTTAdapter(call_id=call_id)
+    stt = MockSTTAdapter(call_id=call_id, mock_transcripts=["Hello, how are you?", "This is a test."])
     llm = MockLLMAdapter(call_id=call_id)
     tts = MockTTSAdapter(call_id=call_id)
     print("✅ All adapters initialized (mock mode)")
@@ -53,10 +53,11 @@ async def test_system():
     
     # Test TTS
     print("\n🔊 Testing TTS...")
-    audio_gen = tts.synthesize_stream("Hello from Zylin")
     chunk_count = 0
-    async for audio_chunk in audio_gen:
+    async for audio_chunk in tts.stream_speech("Hello from Zylin"):
         chunk_count += 1
+        if chunk_count >= 5:  # Just get a few chunks
+            break
     print(f"   Generated {chunk_count} audio chunks")
     
     # Verify database

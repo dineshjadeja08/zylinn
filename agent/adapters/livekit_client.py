@@ -336,8 +336,11 @@ class MockLiveKitClient:
         """
         self.logger.info("mock_subscribing_to_audio")
         
-        # Simulate empty stream - actual test will inject audio
-        if False:  # pylint: disable=using-constant-test
+        # Keep the stream alive for mock testing
+        # In real usage, this would yield actual audio frames
+        while self.connected:
+            await asyncio.sleep(1.0)  # Yield control periodically
+            # Yield empty frame to keep the async iterator alive
             yield b""
     
     async def publish_audio_chunk(self, audio_data: bytes, sample_rate: int = 16000):
