@@ -17,9 +17,12 @@ from models import (
     CallRecord,
     TranscriptChunk,
     AgentReply,
+    Appointment,
     get_call_record,
     get_call_transcripts,
-    get_call_replies
+    get_call_replies,
+    get_appointments_for_call,
+    get_all_appointments
 )
 
 # Load environment variables
@@ -110,6 +113,25 @@ class AgentReplyResponse(BaseModel):
     model: Optional[str]
     tokens_used: Optional[int]
     generation_time_ms: Optional[float]
+    
+    class Config:
+        from_attributes = True
+
+
+class AppointmentResponse(BaseModel):
+    """Appointment response model"""
+    id: int
+    call_id: str
+    customer_name: str
+    customer_phone: Optional[str]
+    customer_email: Optional[str]
+    appointment_date: str
+    appointment_time: str
+    service_type: Optional[str]
+    notes: Optional[str]
+    status: str
+    booked_at: datetime
+    confirmed_by_agent: bool
     
     class Config:
         from_attributes = True
@@ -246,6 +268,42 @@ async def get_call_replies_endpoint(call_id: str, db: Session = Depends(get_db))
     replies = get_call_replies(db, call_id)
     
     return [AgentReplyResponse.from_orm(r) for r in replies]
+
+
+@app.get("/appointments", response_model=List[AppointmentResponse])
+async def list_appointments(
+    status: Optional[str] = None,
+    limit: Optional[int] = 100,
+    db: Session = Depends(get_db)
+):
+    """
+    List all appointments.
+    
+    Args:
+        status: Filter by status (confirmed, cancelled, completed)
+        limit: Maximum number of appointments to return
+    """
+    appointments = get_all_appointments(db, status=status, limit=limit)
+    
+    return [AppointmentResponse.from_orm(a) for a in appointments]
+
+
+@app.get("/calls/{call_id}/appointments", response_model=List[AppointmentResponse])
+async def get_call_appointments_endpoint(call_id: str, db: Session = Depends(get_db)):
+    """
+    Get appointments for a specific call.
+    
+    Args:
+        call_id: Unique call identifier
+    """
+    call = get_call_record(db, call_id)
+    
+    if not call:
+        raise HTTPException(status_code=404, detail=f"Call {call_id} not found")
+    
+    appointments = get_appointments_for_call(db, call_id)
+    
+    return [AppointmentResponse.from_orm(a) for a in appointments]
 
 
 @app.post("/webhook")

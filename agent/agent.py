@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from adapters.livekit_client import create_livekit_client
 from adapters.stt_adapter import create_stt_adapter, TranscriptType
-from adapters.llm_adapter import create_llm_adapter, get_system_prompt
+from adapters.llm_adapter import create_llm_adapter, get_system_prompt, BOOKING_TOOL
 from adapters.tts_adapter import create_tts_adapter
 
 # Import database models
@@ -26,7 +26,8 @@ from models import (
     create_call_record,
     update_call_status,
     add_transcript_chunk,
-    add_agent_reply
+    add_agent_reply,
+    create_appointment_record
 )
 
 # Configure structured logging
@@ -86,6 +87,7 @@ class ZylinAgent:
         self.current_transcript_buffer = []
         self.is_running = False
         self.agent_identity = f"zylin-agent-{call_id}"
+        self.conversation_history = []  # Track conversation for context
         
         # VAD configuration
         self.vad_silence_threshold_ms = int(
@@ -264,7 +266,7 @@ class ZylinAgent:
     
     async def _generate_and_respond(self, user_text: str):
         """
-        Generate LLM response and synthesize speech.
+        Generate LLM response with tool support and synthesize speech.
         
         Args:
             user_text: User's transcribed text
@@ -274,22 +276,51 @@ class ZylinAgent:
             
             self.logger.info("generating_llm_response", user_text=user_text)
             
-            # Prepare prompt
-            system_prompt = get_system_prompt("default")
+            # Add user message to conversation history
+            self.conversation_history.append({"role": "user", "content": user_text})
             
-            # Generate LLM response
-            response_text = await self.llm_adapter.generate(
-                prompt=user_text,
-                system_prompt=system_prompt
+            # Build conversation context (last 10 messages for brevity)
+            context_messages = self.conversation_history[-10:]
+            conversation_context = "\n".join([
+                f"{'User' if msg['role'] == 'user' else 'Agent'}: {msg['content']}"
+                for msg in context_messages
+            ])
+            
+            # Prepare prompt with conversation history
+            prompt = f"Conversation history:\n{conversation_context}\n\nRespond to the user's latest message."
+            
+            # Get system prompt based on environment setting
+            prompt_type = os.getenv("LLM_SYSTEM_PROMPT", "appointment")
+            system_prompt = get_system_prompt(prompt_type)
+            
+            # Generate LLM response with tools
+            tools = [BOOKING_TOOL] if prompt_type == "appointment" else None
+            
+            llm_result = await self.llm_adapter.generate_with_tools(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                tools=tools
             )
             
             generation_time_ms = (datetime.now() - start_time).total_seconds() * 1000
             
+            response_text = llm_result.get("text", "")
+            tool_calls = llm_result.get("tool_calls", [])
+            
             self.logger.info(
                 "llm_response_generated",
                 response=response_text,
+                tool_calls_count=len(tool_calls),
                 generation_time_ms=generation_time_ms
             )
+            
+            # Add assistant response to conversation history
+            self.conversation_history.append({"role": "assistant", "content": response_text})
+            
+            # Execute tool calls if present
+            if tool_calls:
+                for tool_call in tool_calls:
+                    await self._execute_tool(tool_call, response_text)
             
             # Save to database
             session = self.db_manager.get_session()
@@ -306,12 +337,92 @@ class ZylinAgent:
             finally:
                 session.close()
             
-            # Generate and publish TTS
-            await self._synthesize_and_publish(response_text)
+            # Generate and publish TTS (only if there's text to speak)
+            if response_text and response_text.strip():
+                await self._synthesize_and_publish(response_text)
             
         except Exception as e:
             self.logger.error("generate_and_respond_error", error=str(e))
             # Don't raise - continue processing
+    
+    async def _execute_tool(self, tool_call: dict, response_text: str):
+        """
+        Execute a tool call from the LLM.
+        
+        Args:
+            tool_call: Dictionary with 'name' and 'arguments' keys
+            response_text: The accompanying response text from the LLM
+        """
+        tool_name = tool_call.get("name")
+        arguments = tool_call.get("arguments", {})
+        
+        self.logger.info(
+            "executing_tool",
+            tool_name=tool_name,
+            arguments=arguments
+        )
+        
+        try:
+            if tool_name == "book_appointment":
+                # Extract appointment details
+                customer_name = arguments.get("customer_name")
+                appointment_date = arguments.get("appointment_date")
+                appointment_time = arguments.get("appointment_time")
+                customer_phone = arguments.get("customer_phone")
+                customer_email = arguments.get("customer_email")
+                service_type = arguments.get("service_type")
+                notes = arguments.get("notes")
+                
+                # Create appointment record in database
+                session = self.db_manager.get_session()
+                try:
+                    appointment = create_appointment_record(
+                        session=session,
+                        call_id=self.call_id,
+                        customer_name=customer_name,
+                        appointment_date=appointment_date,
+                        appointment_time=appointment_time,
+                        customer_phone=customer_phone,
+                        customer_email=customer_email,
+                        service_type=service_type,
+                        notes=notes,
+                        status="confirmed"
+                    )
+                    
+                    self.logger.info(
+                        "appointment_booked",
+                        appointment_id=appointment.id,
+                        customer=customer_name,
+                        date=appointment_date,
+                        time=appointment_time
+                    )
+                    
+                    # Add confirmation to conversation history
+                    confirmation = (
+                        f"✅ Appointment successfully booked:\n"
+                        f"Name: {customer_name}\n"
+                        f"Date: {appointment_date}\n"
+                        f"Time: {appointment_time}"
+                    )
+                    if service_type:
+                        confirmation += f"\nService: {service_type}"
+                    
+                    self.conversation_history.append({
+                        "role": "system",
+                        "content": confirmation
+                    })
+                    
+                finally:
+                    session.close()
+            else:
+                self.logger.warning("unknown_tool", tool_name=tool_name)
+                
+        except Exception as e:
+            self.logger.error(
+                "tool_execution_error",
+                tool_name=tool_name,
+                error=str(e)
+            )
     
     async def _synthesize_and_publish(self, text: str):
         """

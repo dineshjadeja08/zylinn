@@ -37,6 +37,7 @@ class CallRecord(Base):
     # Relationships
     transcripts = relationship("TranscriptChunk", back_populates="call", cascade="all, delete-orphan")
     replies = relationship("AgentReply", back_populates="call", cascade="all, delete-orphan")
+    appointments = relationship("Appointment", back_populates="call", cascade="all, delete-orphan")
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -105,6 +106,41 @@ class AgentReply(Base):
     
     def __repr__(self):
         return f"<AgentReply(call_id='{self.call_id}', text='{self.response_text[:50]}...')>"
+
+
+class Appointment(Base):
+    """
+    Represents a confirmed appointment booking.
+    """
+    __tablename__ = "appointments"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    call_id = Column(String(100), ForeignKey("call_records.call_id"), nullable=False, index=True)
+    
+    # Appointment details
+    customer_name = Column(String(200), nullable=False)
+    customer_phone = Column(String(50), nullable=True)
+    customer_email = Column(String(200), nullable=True)
+    
+    appointment_date = Column(String(50), nullable=False)  # e.g., "2024-03-15"
+    appointment_time = Column(String(50), nullable=False)  # e.g., "2:30 PM"
+    service_type = Column(String(200), nullable=True)  # e.g., "consultation", "checkup"
+    
+    notes = Column(Text, nullable=True)  # Additional notes or special requests
+    status = Column(String(50), nullable=False, default="confirmed")  # confirmed, cancelled, completed
+    
+    # Metadata
+    booked_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    confirmed_by_agent = Column(Boolean, nullable=False, default=True)
+    
+    # Relationships
+    call = relationship("CallRecord", back_populates="appointments")
+    
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<Appointment(customer='{self.customer_name}', date='{self.appointment_date}', time='{self.appointment_time}')>"
 
 
 class DatabaseManager:
@@ -257,3 +293,70 @@ def get_call_replies(session: Session, call_id: str):
 def get_call_record(session: Session, call_id: str) -> Optional[CallRecord]:
     """Get a specific call record"""
     return session.query(CallRecord).filter(CallRecord.call_id == call_id).first()
+
+
+def create_appointment_record(
+    session: Session,
+    call_id: str,
+    customer_name: str,
+    appointment_date: str,
+    appointment_time: str,
+    customer_phone: Optional[str] = None,
+    customer_email: Optional[str] = None,
+    service_type: Optional[str] = None,
+    notes: Optional[str] = None,
+    status: str = "confirmed"
+) -> Appointment:
+    """Create a new appointment record"""
+    appointment = Appointment(
+        call_id=call_id,
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        customer_email=customer_email,
+        appointment_date=appointment_date,
+        appointment_time=appointment_time,
+        service_type=service_type,
+        notes=notes,
+        status=status,
+        confirmed_by_agent=True
+    )
+    session.add(appointment)
+    session.commit()
+    session.refresh(appointment)
+    return appointment
+
+
+def get_appointments_for_call(session: Session, call_id: str):
+    """Get all appointments for a specific call"""
+    return session.query(Appointment).filter(
+        Appointment.call_id == call_id
+    ).order_by(Appointment.booked_at).all()
+
+
+def get_all_appointments(
+    session: Session,
+    status: Optional[str] = None,
+    limit: Optional[int] = None
+):
+    """Get all appointments, optionally filtered by status"""
+    query = session.query(Appointment)
+    if status:
+        query = query.filter(Appointment.status == status)
+    query = query.order_by(Appointment.appointment_date, Appointment.appointment_time)
+    if limit:
+        query = query.limit(limit)
+    return query.all()
+
+
+def update_appointment_status(
+    session: Session,
+    appointment_id: int,
+    status: str
+) -> Optional[Appointment]:
+    """Update appointment status"""
+    appointment = session.query(Appointment).filter(Appointment.id == appointment_id).first()
+    if appointment:
+        appointment.status = status
+        session.commit()
+        session.refresh(appointment)
+    return appointment

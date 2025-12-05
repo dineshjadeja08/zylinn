@@ -114,6 +114,96 @@ class LLMAdapter:
         retry=retry_if_exception_type((Exception,)),
         reraise=True
     )
+    async def generate_with_tools(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        tools: Optional[list] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
+    ) -> dict:
+        """
+        Generate response from LLM with tool calling support.
+        
+        Args:
+            prompt: User prompt
+            system_prompt: Optional system prompt
+            tools: List of tool definitions
+            temperature: Override default temperature
+            max_tokens: Override default max tokens
+            
+        Returns:
+            Dictionary with 'text' (response text) and optional 'tool_calls' (list of tool invocations)
+        """
+        try:
+            messages = []
+            
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            
+            messages.append({"role": "user", "content": prompt})
+            
+            self.logger.info(
+                "llm_tool_request",
+                prompt_length=len(prompt),
+                model=self.config.model,
+                tools_provided=len(tools) if tools else 0
+            )
+            
+            kwargs = {
+                "model": self.config.model,
+                "messages": messages,
+                "temperature": temperature or self.config.temperature,
+                "max_tokens": max_tokens or self.config.max_tokens
+            }
+            
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            
+            response = await self.client.chat.completions.create(**kwargs)
+            
+            message = response.choices[0].message
+            result = {
+                "text": message.content or "",
+                "tool_calls": []
+            }
+            
+            # Extract tool calls if present
+            if hasattr(message, 'tool_calls') and message.tool_calls:
+                import json
+                for tool_call in message.tool_calls:
+                    result["tool_calls"].append({
+                        "id": tool_call.id,
+                        "name": tool_call.function.name,
+                        "arguments": json.loads(tool_call.function.arguments)
+                    })
+                    self.logger.info(
+                        "llm_tool_call",
+                        tool_name=tool_call.function.name,
+                        arguments=tool_call.function.arguments
+                    )
+            
+            self.logger.info(
+                "llm_tool_response",
+                response_length=len(result["text"]),
+                tool_calls_count=len(result["tool_calls"]),
+                finish_reason=response.choices[0].finish_reason,
+                usage=response.usage.total_tokens if response.usage else 0
+            )
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error("llm_tool_generation_failed", error=str(e))
+            raise
+    
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((Exception,)),
+        reraise=True
+    )
     async def generate_stream(
         self,
         prompt: str,
@@ -240,6 +330,22 @@ class MockLLMAdapter:
             yield word + " "
         
         self.logger.info("mock_llm_stream_complete")
+    
+    async def generate_with_tools(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        tools: Optional[list] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
+    ) -> dict:
+        """Generate mock response with tool calls (for testing)"""
+        # For mock mode, return empty tool calls
+        response = await self.generate(prompt, system_prompt, temperature, max_tokens)
+        return {
+            "text": response,
+            "tool_calls": []
+        }
 
 
 def create_llm_adapter(
@@ -285,6 +391,49 @@ def create_llm_adapter(
     return LLMAdapter(call_id, config)
 
 
+# Tool definitions for structured output
+BOOKING_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "book_appointment",
+        "description": "Book an appointment for the customer after confirming all required details",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customer_name": {
+                    "type": "string",
+                    "description": "The customer's full name"
+                },
+                "customer_phone": {
+                    "type": "string",
+                    "description": "The customer's phone number (optional)"
+                },
+                "customer_email": {
+                    "type": "string",
+                    "description": "The customer's email address (optional)"
+                },
+                "appointment_date": {
+                    "type": "string",
+                    "description": "The appointment date in format YYYY-MM-DD (e.g., 2024-03-15)"
+                },
+                "appointment_time": {
+                    "type": "string",
+                    "description": "The appointment time (e.g., '2:30 PM', '14:30')"
+                },
+                "service_type": {
+                    "type": "string",
+                    "description": "Type of service or appointment reason (optional)"
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Any additional notes or special requests (optional)"
+                }
+            },
+            "required": ["customer_name", "appointment_date", "appointment_time"]
+        }
+    }
+}
+
 # Predefined system prompts
 SYSTEM_PROMPTS = {
     "default": """You are Zylin, a helpful AI voice assistant. 
@@ -295,9 +444,26 @@ Keep your responses brief (1-2 sentences) unless more detail is explicitly reque
 You are polite, empathetic, and solution-oriented.
 Keep responses concise and actionable.""",
     
-    "appointment": """You are Zylin, an appointment scheduling assistant.
-You help users book, modify, and check appointments.
-Always confirm details clearly and ask for clarification when needed."""
+    "appointment": """You are Zylin, an AI appointment scheduling assistant for a medical clinic.
+
+Your job is to:
+1. Greet callers warmly and ask how you can help
+2. Collect required information: customer name, preferred date, and time
+3. Optionally collect: phone number, email, service type, and any special notes
+4. Confirm all details clearly before booking
+5. Use the book_appointment tool ONLY when you have confirmed all required details
+6. After booking, provide a clear confirmation with the appointment details
+
+Guidelines:
+- Keep responses natural and conversational
+- Ask one question at a time
+- Clarify any ambiguous information
+- Be patient and friendly
+- Always repeat back the confirmed details before booking
+- If the customer wants to change something, update accordingly before booking
+
+Available time slots: Monday-Friday, 9 AM - 5 PM
+Service types: General Consultation, Follow-up, Checkup, Specialist Visit"""
 }
 
 

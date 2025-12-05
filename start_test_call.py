@@ -52,7 +52,6 @@ def create_test_page(token: str, room_name: str):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zylin Voice Agent - Test Call</title>
-    <script src="https://unpkg.com/livekit-client/dist/livekit-client.umd.min.js"></script>
     <style>
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -132,11 +131,17 @@ def create_test_page(token: str, room_name: str):
         <div class="status" id="status">Click "Start Call" to begin</div>
     </div>
 
-    <script>
+    <script type="module">
+        import * as LK from 'https://cdn.jsdelivr.net/npm/livekit-client@2.5.8/+esm';
+        
         const LIVEKIT_URL = '{os.getenv("LIVEKIT_URL")}';
         const TOKEN = '{token}';
         let room = null;
         let audioTrack = null;
+        
+        // Make functions globally accessible
+        window.startCall = startCall;
+        window.endCall = endCall;
 
         function updateStatus(msg, color = '#667eea') {{
             const status = document.getElementById('status');
@@ -151,19 +156,19 @@ def create_test_page(token: str, room_name: str):
                 updateStatus('🔌 Connecting...', '#ffa500');
 
                 // Create room
-                room = new LivekitClient.Room({{
+                room = new LK.Room({{
                     adaptiveStream: true,
                     dynacast: true,
                 }});
 
                 // Room events
-                room.on(LivekitClient.RoomEvent.Connected, async () => {{
+                room.on(LK.RoomEvent.Connected, async () => {{
                     updateStatus('✅ Connected! Speak to the agent...', '#48bb78');
                     document.getElementById('mic').style.display = 'block';
                     document.getElementById('endBtn').style.display = 'block';
 
                     // Publish microphone
-                    audioTrack = await LivekitClient.createLocalAudioTrack({{
+                    audioTrack = await LK.createLocalAudioTrack({{
                         echoCancellation: true,
                         noiseSuppression: true,
                         autoGainControl: true,
@@ -171,20 +176,20 @@ def create_test_page(token: str, room_name: str):
                     await room.localParticipant.publishTrack(audioTrack);
                 }});
 
-                room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {{
-                    if (track.kind === LivekitClient.Track.Kind.Audio) {{
+                room.on(LK.RoomEvent.TrackSubscribed, (track, publication, participant) => {{
+                    if (track.kind === LK.Track.Kind.Audio) {{
                         const audio = track.attach();
                         document.body.appendChild(audio);
                         updateStatus('🔊 Agent audio connected - listening...', '#667eea');
                     }}
                 }});
 
-                room.on(LivekitClient.RoomEvent.Disconnected, () => {{
+                room.on(LK.RoomEvent.Disconnected, () => {{
                     updateStatus('📴 Disconnected', '#f56565');
                     cleanup();
                 }});
 
-                room.on(LivekitClient.RoomEvent.ParticipantConnected, (participant) => {{
+                room.on(LK.RoomEvent.ParticipantConnected, (participant) => {{
                     if (participant.identity.includes('agent')) {{
                         updateStatus('🤖 Agent joined! Start speaking...', '#48bb78');
                     }}
@@ -230,7 +235,12 @@ def create_test_page(token: str, room_name: str):
 def main():
     print("🎙️ Zylin Voice Agent - Test Call Generator\n")
     
-    room_name = input("Enter room name [test-room-001]: ").strip() or "test-room-001"
+    # Accept room name from command line or prompt
+    import sys
+    if len(sys.argv) > 1:
+        room_name = sys.argv[1]
+    else:
+        room_name = input("Enter room name [test-room-001]: ").strip() or "test-room-001"
     participant_name = f"test-caller-{os.getpid()}"
     
     print(f"\n📝 Generating token for room: {room_name}")
