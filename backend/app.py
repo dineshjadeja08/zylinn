@@ -5,7 +5,7 @@ FastAPI service for webhooks, transcript retrieval, and WebSocket support.
 import os
 from datetime import datetime
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -18,12 +18,16 @@ from models import (
     TranscriptChunk,
     AgentReply,
     Appointment,
+    Customer,
     get_call_record,
     get_call_transcripts,
     get_call_replies,
     get_appointments_for_call,
-    get_all_appointments
+    get_all_appointments,
+    increment_customer_usage,
+    log_usage
 )
+from auth import get_current_customer, require_permission
 
 # Load environment variables
 load_dotenv()
@@ -47,9 +51,10 @@ app = FastAPI(
 )
 
 # CORS middleware
+ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -187,16 +192,20 @@ async def health_check():
 async def list_calls(
     status: Optional[str] = None,
     limit: int = 50,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    customer: Customer = Depends(get_current_customer)
 ):
     """
-    List call records.
+    List call records for the authenticated customer.
     
     Args:
         status: Filter by status (active, completed, failed)
         limit: Maximum number of records to return
+    
+    Requires:
+        - Valid API key in X-API-Key header
     """
-    query = db.query(CallRecord)
+    query = db.query(CallRecord).filter(CallRecord.customer_id == customer.customer_id)
     
     if status:
         query = query.filter(CallRecord.status == status)
@@ -207,17 +216,28 @@ async def list_calls(
 
 
 @app.get("/calls/{call_id}", response_model=CallDetailResponse)
-async def get_call_details(call_id: str, db: Session = Depends(get_db)):
+async def get_call_details(
+    call_id: str,
+    db: Session = Depends(get_db),
+    customer: Customer = Depends(get_current_customer)
+):
     """
     Get detailed information about a specific call.
     
     Args:
         call_id: Unique call identifier
+    
+    Requires:
+        - Valid API key in X-API-Key header
     """
     call = get_call_record(db, call_id)
     
     if not call:
         raise HTTPException(status_code=404, detail=f"Call {call_id} not found")
+    
+    # Verify ownership
+    if call.customer_id != customer.customer_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     
     transcripts = get_call_transcripts(db, call_id)
     replies = get_call_replies(db, call_id)
@@ -233,7 +253,8 @@ async def get_call_details(call_id: str, db: Session = Depends(get_db)):
 async def get_call_transcripts_endpoint(
     call_id: str,
     final_only: bool = False,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    customer: Customer = Depends(get_current_customer)
 ):
     """
     Get transcripts for a specific call.
@@ -241,11 +262,18 @@ async def get_call_transcripts_endpoint(
     Args:
         call_id: Unique call identifier
         final_only: If True, return only final transcripts
+    
+    Requires:
+        - Valid API key in X-API-Key header
     """
     call = get_call_record(db, call_id)
     
     if not call:
         raise HTTPException(status_code=404, detail=f"Call {call_id} not found")
+    
+    # Verify ownership
+    if call.customer_id != customer.customer_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     
     transcripts = get_call_transcripts(db, call_id, final_only=final_only)
     
@@ -253,17 +281,28 @@ async def get_call_transcripts_endpoint(
 
 
 @app.get("/calls/{call_id}/replies", response_model=List[AgentReplyResponse])
-async def get_call_replies_endpoint(call_id: str, db: Session = Depends(get_db)):
+async def get_call_replies_endpoint(
+    call_id: str,
+    db: Session = Depends(get_db),
+    customer: Customer = Depends(get_current_customer)
+):
     """
     Get agent replies for a specific call.
     
     Args:
         call_id: Unique call identifier
+    
+    Requires:
+        - Valid API key in X-API-Key header
     """
     call = get_call_record(db, call_id)
     
     if not call:
         raise HTTPException(status_code=404, detail=f"Call {call_id} not found")
+    
+    # Verify ownership
+    if call.customer_id != customer.customer_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     
     replies = get_call_replies(db, call_id)
     
@@ -271,17 +310,23 @@ async def get_call_replies_endpoint(call_id: str, db: Session = Depends(get_db))
 
 
 @app.get("/appointments", response_model=List[AppointmentResponse])
+@require_permission("appointments")
 async def list_appointments(
     status: Optional[str] = None,
     limit: Optional[int] = 100,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    customer: Customer = Depends(get_current_customer)
 ):
     """
-    List all appointments.
+    List all appointments for the authenticated customer.
     
     Args:
         status: Filter by status (confirmed, cancelled, completed)
         limit: Maximum number of appointments to return
+    
+    Requires:
+        - Valid API key in X-API-Key header
+        - "appointments" feature enabled for customer plan
     """
     appointments = get_all_appointments(db, status=status, limit=limit)
     
@@ -289,12 +334,21 @@ async def list_appointments(
 
 
 @app.get("/calls/{call_id}/appointments", response_model=List[AppointmentResponse])
-async def get_call_appointments_endpoint(call_id: str, db: Session = Depends(get_db)):
+@require_permission("appointments")
+async def get_call_appointments_endpoint(
+    call_id: str,
+    db: Session = Depends(get_db),
+    customer: Customer = Depends(get_current_customer)
+):
     """
     Get appointments for a specific call.
     
     Args:
         call_id: Unique call identifier
+    
+    Requires:
+        - Valid API key in X-API-Key header
+        - "appointments" feature enabled for customer plan
     """
     call = get_call_record(db, call_id)
     

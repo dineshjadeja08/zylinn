@@ -1,16 +1,96 @@
 """
 Database Models for Zylin Voice Agent
-Defines SQLAlchemy models for call records, transcripts, and agent replies.
+Defines SQLAlchemy models for call records, transcripts, agent replies, customers, and usage tracking.
 """
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey
+import uuid
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, ARRAY, DECIMAL
+from sqlalchemy.dialects.postgresql import UUID, INET
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 import os
 
 Base = declarative_base()
+
+
+class Customer(Base):
+    """
+    Represents a customer/organization (multi-tenancy).
+    """
+    __tablename__ = "customers"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_id = Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4, index=True)
+    company_name = Column(String(200), nullable=False)
+    email = Column(String(200), unique=True, nullable=False, index=True)
+    api_key_hash = Column(String(255), nullable=False)
+    
+    # Plan and limits
+    plan_type = Column(String(50), nullable=False, default="free")  # free, starter, pro, enterprise
+    max_calls_per_month = Column(Integer, default=100)
+    calls_this_month = Column(Integer, default=0)
+    
+    status = Column(String(50), nullable=False, default="active")  # active, suspended, cancelled
+    
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    usage_logs = relationship("UsageLog", back_populates="customer", cascade="all, delete-orphan")
+    webhook_configs = relationship("WebhookConfig", back_populates="customer", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<Customer(company='{self.company_name}', plan='{self.plan_type}')>"
+
+
+class UsageLog(Base):
+    """
+    Tracks usage for billing and analytics.
+    """
+    __tablename__ = "usage_logs"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.customer_id"), nullable=False, index=True)
+    call_id = Column(String(100), nullable=False)
+    
+    duration_seconds = Column(Float)
+    stt_characters = Column(Integer)
+    llm_tokens = Column(Integer)
+    tts_characters = Column(Integer)
+    cost_usd = Column(DECIMAL(10, 4))
+    
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    
+    # Relationships
+    customer = relationship("Customer", back_populates="usage_logs")
+    
+    def __repr__(self):
+        return f"<UsageLog(call='{self.call_id}', cost=${self.cost_usd})>"
+
+
+class WebhookConfig(Base):
+    """
+    Customer webhook configurations.
+    """
+    __tablename__ = "webhook_configs"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.customer_id"), nullable=False, index=True)
+    webhook_url = Column(Text, nullable=False)
+    events = Column(ARRAY(String))  # Array of event types
+    secret_key = Column(String(255), nullable=False)  # For HMAC signature
+    is_active = Column(Boolean, default=True)
+    
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    customer = relationship("Customer", back_populates="webhook_configs")
+    
+    def __repr__(self):
+        return f"<WebhookConfig(url='{self.webhook_url[:50]}...')>"
 
 
 class CallRecord(Base):
@@ -21,6 +101,7 @@ class CallRecord(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     call_id = Column(String(100), unique=True, nullable=False, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.customer_id"), nullable=True, index=True)  # Null for legacy calls
     room_name = Column(String(200), nullable=False)
     agent_identity = Column(String(200), nullable=False)
     
@@ -360,3 +441,85 @@ def update_appointment_status(
         session.commit()
         session.refresh(appointment)
     return appointment
+
+
+# Customer management helper functions
+def create_customer(
+    session: Session,
+    customer_name: str,
+    email: str,
+    api_key_hash: str,
+    plan_type: str = "free",
+    max_calls_per_month: int = 100,
+    max_minutes_per_call: int = 10
+) -> Customer:
+    """Create a new customer"""
+    customer = Customer(
+        customer_name=customer_name,
+        email=email,
+        api_key_hash=api_key_hash,
+        plan_type=plan_type,
+        max_calls_per_month=max_calls_per_month,
+        max_minutes_per_call=max_minutes_per_call,
+        is_active=True
+    )
+    session.add(customer)
+    session.commit()
+    session.refresh(customer)
+    return customer
+
+
+def get_customer_by_id(session: Session, customer_id: str) -> Optional[Customer]:
+    """Get customer by ID"""
+    return session.query(Customer).filter(Customer.customer_id == customer_id).first()
+
+
+def get_customer_by_email(session: Session, email: str) -> Optional[Customer]:
+    """Get customer by email"""
+    return session.query(Customer).filter(Customer.email == email).first()
+
+
+def increment_customer_usage(session: Session, customer_id: str) -> bool:
+    """Increment customer's monthly call counter"""
+    customer = session.query(Customer).filter(Customer.customer_id == customer_id).first()
+    if customer:
+        customer.calls_this_month += 1
+        customer.last_call_at = datetime.utcnow()
+        session.commit()
+        return True
+    return False
+
+
+def log_usage(
+    session: Session,
+    customer_id: str,
+    call_id: str,
+    duration_seconds: float,
+    tokens_used: int = 0,
+    cost_usd: float = 0.0
+) -> UsageLog:
+    """Log usage for billing"""
+    usage = UsageLog(
+        customer_id=customer_id,
+        call_id=call_id,
+        duration_seconds=duration_seconds,
+        tokens_used=tokens_used,
+        cost_usd=cost_usd
+    )
+    session.add(usage)
+    session.commit()
+    session.refresh(usage)
+    return usage
+
+
+def get_customer_usage_logs(
+    session: Session,
+    customer_id: str,
+    limit: Optional[int] = 100
+):
+    """Get usage logs for a customer"""
+    query = session.query(UsageLog).filter(UsageLog.customer_id == customer_id)
+    query = query.order_by(UsageLog.timestamp.desc())
+    if limit:
+        query = query.limit(limit)
+    return query.all()
