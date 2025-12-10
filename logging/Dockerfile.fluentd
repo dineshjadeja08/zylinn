@@ -1,0 +1,18 @@
+FROM fluent/fluentd:v1.16-debian-1
+
+USER root
+
+# Install plugins
+RUN gem install fluent-plugin-elasticsearch --no-document --version 5.3.0
+RUN gem install fluent-plugin-record-modifier --no-document
+RUN gem install fluent-plugin-rewrite-tag-filter --no-document
+RUN gem install fluent-plugin-s3 --no-document
+
+# Create directories
+RUN mkdir -p /var/log/fluentd/buffer/elasticsearch
+RUN mkdir -p /var/log/fluentd/errors
+
+# Set permissions
+RUN chown -R fluent:fluent /var/log/fluentd
+
+USER fluent

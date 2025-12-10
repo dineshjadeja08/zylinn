@@ -6,10 +6,10 @@ This is a condensed version of DEPLOYMENT.md for rapid deployment.
 
 - [ ] Docker & Docker Compose installed
 - [ ] Domain name with DNS configured
-- [ ] OpenAI API key
-- [ ] AssemblyAI API key
-- [ ] ElevenLabs API key
-- [ ] LiveKit credentials
+- [ ] OpenAI API key (https://platform.openai.com/api-keys)
+- [ ] AssemblyAI API key (https://www.assemblyai.com/app/account)
+- [ ] **ElevenLabs API key** (https://elevenlabs.io/app/settings/api-keys) ⭐ NEW
+- [ ] LiveKit credentials (https://livekit.io)
 
 ## 5-Minute Setup
 
@@ -33,11 +33,16 @@ Edit `.env` and replace:
 - `YOUR_API_SALT` → Generated salt
 - `YOUR_OPENAI_KEY` → OpenAI API key
 - `YOUR_ASSEMBLYAI_KEY` → AssemblyAI API key
-- `YOUR_ELEVENLABS_KEY` → ElevenLabs API key
+- `YOUR_ELEVENLABS_KEY` → **ElevenLabs API key** (see ELEVENLABS_TTS_SETUP.md)
 - `YOUR_LIVEKIT_URL` → LiveKit WebSocket URL
 - `YOUR_LIVEKIT_KEY` → LiveKit API key
 - `YOUR_LIVEKIT_SECRET` → LiveKit secret
 - `yourdomain.com` → Your actual domain
+
+**Optional TTS Configuration:**
+- `TTS_PROVIDER=elevenlabs` (default - high quality, paid)
+- `TTS_VOICE_ID=21m00Tcm4TlvDq8ikWAM` (Rachel - professional voice)
+- Fallback: `TTS_PROVIDER=gtts` (free, lower quality)
 
 ### 2. Setup SSL (1 min)
 
@@ -87,7 +92,24 @@ Follow prompts:
 
 **Save the generated API key!** You won't see it again.
 
-### 5. Test API
+### 5. Validate TTS Configuration (30 sec)
+
+```bash
+# Validate ElevenLabs TTS setup
+python validate_tts.py
+```
+
+Expected output:
+```
+✅ TTS_PROVIDER: elevenlabs
+✅ TTS_API_KEY: Set
+✅ Adapter created: ElevenLabsTTSAdapter
+✅ Audio generated successfully!
+```
+
+If you see `GTTSFallbackAdapter`, ElevenLabs is not configured (will use free fallback).
+
+### 6. Test API
 
 ```bash
 # Test health (no auth)
@@ -114,11 +136,12 @@ Your production SaaS is now running at:
 
 ## Next Steps
 
-1. **Change Grafana password** (default: admin/admin)
-2. **Set up monitoring alerts** (see DEPLOYMENT.md)
-3. **Configure backups** (PostgreSQL + Redis)
-4. **Test voice calls** via LiveKit
-5. **Onboard first real customer**
+1. **Test TTS voices** - Try different voices (see ELEVENLABS_TTS_SETUP.md)
+2. **Change Grafana password** (default: admin/admin)
+3. **Set up monitoring alerts** (see DEPLOYMENT.md)
+4. **Configure backups** (PostgreSQL + Redis)
+5. **Test voice calls** via LiveKit
+6. **Onboard first real customer**
 
 ## Common Issues
 

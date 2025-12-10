@@ -74,6 +74,31 @@ CREATE TABLE IF NOT EXISTS webhook_configs (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+-- Create users table for customer portal authentication
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    customer_id UUID NOT NULL REFERENCES customers(customer_id),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    full_name VARCHAR(255),
+    role VARCHAR(50) NOT NULL DEFAULT 'owner', -- owner, admin, member
+    is_active BOOLEAN DEFAULT TRUE,
+    is_verified BOOLEAN DEFAULT FALSE,
+    verification_token VARCHAR(255) UNIQUE,
+    verification_token_expires TIMESTAMP,
+    reset_token VARCHAR(255) UNIQUE,
+    reset_token_expires TIMESTAMP,
+    last_login TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Create indexes for users table
+CREATE INDEX IF NOT EXISTS idx_users_customer ON users(customer_id);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_verification_token ON users(verification_token);
+CREATE INDEX IF NOT EXISTS idx_users_reset_token ON users(reset_token);
+
 -- Create function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -88,6 +113,9 @@ CREATE TRIGGER update_customers_updated_at BEFORE UPDATE ON customers
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_webhook_configs_updated_at BEFORE UPDATE ON webhook_configs
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Insert default admin customer for testing

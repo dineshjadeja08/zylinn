@@ -38,6 +38,7 @@ class Customer(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
+    users = relationship("User", back_populates="customer", cascade="all, delete-orphan")
     usage_logs = relationship("UsageLog", back_populates="customer", cascade="all, delete-orphan")
     webhook_configs = relationship("WebhookConfig", back_populates="customer", cascade="all, delete-orphan")
     
@@ -91,6 +92,45 @@ class WebhookConfig(Base):
     
     def __repr__(self):
         return f"<WebhookConfig(url='{self.webhook_url[:50]}...')>"
+
+
+class User(Base):
+    """
+    User accounts for customer portal authentication.
+    Each user is linked to a customer account.
+    """
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.customer_id"), nullable=False, index=True)
+    
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    
+    full_name = Column(String(255), nullable=True)
+    role = Column(String(50), nullable=False, default="owner")  # owner, admin, member
+    
+    is_active = Column(Boolean, default=True)
+    is_verified = Column(Boolean, default=False)
+    
+    # Email verification
+    verification_token = Column(String(255), nullable=True, unique=True, index=True)
+    verification_token_expires = Column(DateTime, nullable=True)
+    
+    # Password reset
+    reset_token = Column(String(255), nullable=True, unique=True, index=True)
+    reset_token_expires = Column(DateTime, nullable=True)
+    
+    last_login = Column(DateTime, nullable=True)
+    
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    customer = relationship("Customer", back_populates="users")
+    
+    def __repr__(self):
+        return f"<User(email='{self.email}', role='{self.role}')>"
 
 
 class CallRecord(Base):
@@ -523,3 +563,88 @@ def get_customer_usage_logs(
     if limit:
         query = query.limit(limit)
     return query.all()
+
+
+# User management helper functions
+def create_user(
+    session: Session,
+    customer_id: str,
+    email: str,
+    password_hash: str,
+    full_name: Optional[str] = None,
+    role: str = "owner"
+) -> "User":
+    """Create a new user"""
+    user = User(
+        customer_id=customer_id,
+        email=email,
+        password_hash=password_hash,
+        full_name=full_name,
+        role=role,
+        is_active=True,
+        is_verified=False
+    )
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
+
+
+def get_user_by_email(session: Session, email: str) -> Optional["User"]:
+    """Get user by email"""
+    return session.query(User).filter(User.email == email).first()
+
+
+def get_user_by_id(session: Session, user_id: int) -> Optional["User"]:
+    """Get user by ID"""
+    return session.query(User).filter(User.id == user_id).first()
+
+
+def get_user_by_verification_token(session: Session, token: str) -> Optional["User"]:
+    """Get user by verification token"""
+    return session.query(User).filter(
+        User.verification_token == token,
+        User.verification_token_expires > datetime.utcnow()
+    ).first()
+
+
+def get_user_by_reset_token(session: Session, token: str) -> Optional["User"]:
+    """Get user by reset token"""
+    return session.query(User).filter(
+        User.reset_token == token,
+        User.reset_token_expires > datetime.utcnow()
+    ).first()
+
+
+def update_user_verification_status(session: Session, user_id: int) -> bool:
+    """Mark user as verified"""
+    user = session.query(User).filter(User.id == user_id).first()
+    if user:
+        user.is_verified = True
+        user.verification_token = None
+        user.verification_token_expires = None
+        session.commit()
+        return True
+    return False
+
+
+def update_user_password(session: Session, user_id: int, password_hash: str) -> bool:
+    """Update user password and clear reset token"""
+    user = session.query(User).filter(User.id == user_id).first()
+    if user:
+        user.password_hash = password_hash
+        user.reset_token = None
+        user.reset_token_expires = None
+        session.commit()
+        return True
+    return False
+
+
+def update_last_login(session: Session, user_id: int) -> bool:
+    """Update user's last login timestamp"""
+    user = session.query(User).filter(User.id == user_id).first()
+    if user:
+        user.last_login = datetime.utcnow()
+        session.commit()
+        return True
+    return False

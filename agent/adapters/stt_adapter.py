@@ -144,15 +144,19 @@ class AssemblyAISTTAdapter(STTAdapter):
             try:
                 result = await asyncio.wait_for(
                     self.transcript_queue.get(),
-                    timeout=10.0
+                    timeout=30.0  # 30 second timeout for keepalive
                 )
                 yield result
                 
             except asyncio.TimeoutError:
+                # No transcripts for 30 seconds, send keepalive and continue
+                self.logger.debug("assemblyai_stt_keepalive", timeout_seconds=30)
                 continue
             except Exception as e:
                 self.logger.error("transcript_stream_error", error=str(e))
-                break
+                # Don't break - continue listening unless explicitly closed
+                await asyncio.sleep(1.0)
+                continue
     
     async def reset(self):
         """Reset transcription session"""
@@ -302,11 +306,14 @@ class WhisperSTTAdapter(STTAdapter):
                 )
                 yield result
             except asyncio.TimeoutError:
-                # No transcripts for 5 minutes, continue waiting
+                # No transcripts for 5 minutes, send keepalive and continue
+                self.logger.debug("whisper_stt_keepalive", timeout_seconds=300)
                 continue
             except Exception as e:
                 self.logger.error("transcript_stream_error", error=str(e))
-                break
+                # Don't break - continue listening unless explicitly closed
+                await asyncio.sleep(1.0)
+                continue
     
     async def reset(self):
         """Reset transcription session"""
@@ -382,23 +389,22 @@ class MockSTTAdapter(STTAdapter):
     
     async def get_transcript_stream(self) -> AsyncIterator[TranscriptResult]:
         """Stream mock transcripts"""
-        empty_count = 0
         while True:
             try:
                 result = await asyncio.wait_for(
                     self.transcript_queue.get(),
-                    timeout=1.0
+                    timeout=30.0  # 30 second timeout for keepalive
                 )
-                empty_count = 0  # Reset counter on successful get
                 yield result
             except asyncio.TimeoutError:
-                empty_count += 1
-                if empty_count >= 3:  # Stop after 3 seconds of no data
-                    break
+                # No transcripts for 30 seconds, continue waiting (keepalive)
+                self.logger.debug("mock_stt_keepalive", timeout_seconds=30)
                 continue
             except Exception as e:
                 self.logger.error("mock_stream_error", error=str(e))
-                break
+                # Don't break - continue listening unless explicitly closed
+                await asyncio.sleep(1.0)
+                continue
     
     async def reset(self):
         """Reset mock adapter"""

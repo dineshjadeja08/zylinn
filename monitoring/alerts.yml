@@ -1,0 +1,204 @@
+# Prometheus Alerting Rules
+# Alerts for critical system events
+
+groups:
+  - name: zylin_alerts
+    interval: 30s
+    rules:
+      # Service Availability Alerts
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been down for more than 2 minutes."
+
+      - alert: BackendDown
+        expr: up{job="backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: backend
+        annotations:
+          summary: "Backend service is down"
+          description: "The backend API service is unreachable."
+
+      - alert: DatabaseDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "The PostgreSQL database is unreachable."
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis cache is down"
+          description: "The Redis cache service is unreachable."
+
+      # Performance Alerts
+      - alert: HighResponseTime
+        expr: http_request_duration_seconds{quantile="0.95"} > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High API response time"
+          description: "95th percentile response time is {{ $value }}s (threshold: 2s)"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: reliability
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      # Resource Alerts
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total[5m]) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          component: resources
+        annotations:
+          summary: "High CPU usage on {{ $labels.job }}"
+          description: "CPU usage is {{ $value | humanizePercentage }} (threshold: 80%)"
+
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes / process_virtual_memory_max_bytes > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          component: resources
+        annotations:
+          summary: "High memory usage on {{ $labels.job }}"
+          description: "Memory usage is {{ $value | humanizePercentage }} (threshold: 90%)"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: storage
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Available disk space is {{ $value | humanizePercentage }} (threshold: 10%)"
+
+      # Database Alerts
+      - alert: PostgreSQLTooManyConnections
+        expr: pg_stat_activity_count > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "PostgreSQL has too many connections"
+          description: "{{ $value }} connections (threshold: 80)"
+
+      - alert: PostgreSQLSlowQueries
+        expr: rate(pg_stat_statements_mean_exec_time[5m]) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "PostgreSQL slow queries detected"
+          description: "Average query time is {{ $value }}ms (threshold: 1000ms)"
+
+      # Redis Alerts
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis is using {{ $value | humanizePercentage }} of max memory (threshold: 90%)"
+
+      - alert: RedisTooManyConnections
+        expr: redis_connected_clients > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis has too many connections"
+          description: "{{ $value }} clients connected (threshold: 1000)"
+
+      # Agent Alerts
+      - alert: AgentHighFailureRate
+        expr: rate(agent_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: agent
+        annotations:
+          summary: "Voice agent has high failure rate"
+          description: "Agent error rate is {{ $value | humanizePercentage }} (threshold: 10%)"
+
+      - alert: TTSHighLatency
+        expr: tts_latency_seconds{quantile="0.95"} > 3
+        for: 5m
+        labels:
+          severity: warning
+          component: tts
+        annotations:
+          summary: "TTS latency is high"
+          description: "95th percentile TTS latency is {{ $value }}s (threshold: 3s)"
+
+      - alert: STTHighLatency
+        expr: stt_latency_seconds{quantile="0.95"} > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: stt
+        annotations:
+          summary: "STT latency is high"
+          description: "95th percentile STT latency is {{ $value }}s (threshold: 2s)"
+
+      # Backup Alerts
+      - alert: BackupFailed
+        expr: time() - backup_last_success_timestamp > 90000
+        for: 1h
+        labels:
+          severity: critical
+          component: backup
+        annotations:
+          summary: "Backup has failed"
+          description: "Last successful backup was {{ $value | humanizeDuration }} ago (threshold: 25 hours)"
+
+      # Certificate Expiry Alerts
+      - alert: SSLCertificateExpiringSoon
+        expr: (ssl_certificate_expiry_seconds - time()) < 604800
+        for: 1h
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "SSL certificate expiring soon"
+          description: "SSL certificate for {{ $labels.domain }} expires in {{ $value | humanizeDuration }} (threshold: 7 days)"
+
+      - alert: SSLCertificateExpired
+        expr: ssl_certificate_expiry_seconds < time()
+        for: 5m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "SSL certificate has expired"
+          description: "SSL certificate for {{ $labels.domain }} has expired!"

@@ -1,0 +1,27 @@
+# Kibana Configuration
+
+server.name: zylin-kibana
+server.host: "0.0.0.0"
+server.port: 5601
+
+# Elasticsearch connection
+elasticsearch.hosts: [ "http://elasticsearch:9200" ]
+
+# Monitoring
+monitoring.ui.container.elasticsearch.enabled: true
+
+# Security (for production, enable HTTPS)
+# server.ssl.enabled: true
+# server.ssl.certificate: /usr/share/kibana/config/certs/kibana.crt
+# server.ssl.key: /usr/share/kibana/config/certs/kibana.key
+
+# Advanced settings
+elasticsearch.requestTimeout: 60000
+kibana.index: ".kibana"
+
+# Default app
+kibana.defaultAppId: "discover"
+
+# Logging
+logging.dest: stdout
+logging.quiet: false

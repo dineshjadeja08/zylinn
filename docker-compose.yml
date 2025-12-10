@@ -9,7 +9,7 @@ services:
     environment:
       POSTGRES_DB: zylin
       POSTGRES_USER: zylin_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme123}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
@@ -28,6 +28,7 @@ services:
     image: redis:7-alpine
     container_name: zylin-redis
     restart: unless-stopped
+    command: redis-server --appendonly yes --appendfsync everysec --requirepass ${REDIS_PASSWORD}
     ports:
       - "6379:6379"
     volumes:
@@ -50,11 +51,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://zylin_user:${DB_PASSWORD:-changeme123}@postgres:5432/zylin
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://zylin_user:${DB_PASSWORD}@postgres:5432/zylin
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - BACKEND_HOST=0.0.0.0
       - BACKEND_PORT=8000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - API_KEY_SALT=${API_KEY_SALT}
     env_file:
       - .env.production
     depends_on:
@@ -72,6 +75,12 @@ services:
       - zylin-network
     volumes:
       - ./logs:/app/logs
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: localhost:24224
+        tag: backend
+        fluentd-async: "true"
 
   # Agent Service (can be scaled)
   agent:
@@ -82,8 +91,8 @@ services:
     deploy:
       replicas: 2
     environment:
-      - DATABASE_URL=postgresql://zylin_user:${DB_PASSWORD:-changeme123}@postgres:5432/zylin
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://zylin_user:${DB_PASSWORD}@postgres:5432/zylin
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     env_file:
       - .env.production
@@ -98,6 +107,12 @@ services:
       - zylin-network
     volumes:
       - ./logs:/app/logs
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: localhost:24224
+        tag: agent
+        fluentd-async: "true"
 
   # Nginx reverse proxy
   nginx:
@@ -140,8 +155,10 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=https://yourdomain.com/grafana
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
@@ -150,11 +167,118 @@ services:
     networks:
       - zylin-network
 
+  # Elasticsearch for log storage
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: zylin-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - zylin-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Kibana for log visualization
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: zylin-kibana
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    volumes:
+      - ./logging/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    depends_on:
+      - elasticsearch
+    networks:
+      - zylin-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Fluentd for log collection
+  fluentd:
+    build:
+      context: ./logging
+      dockerfile: Dockerfile.fluentd
+    container_name: zylin-fluentd
+    restart: unless-stopped
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+    volumes:
+      - ./logging/fluentd.conf:/fluentd/etc/fluent.conf:ro
+      - ./logs:/var/log/containers:ro
+      - fluentd_data:/var/log/fluentd
+    depends_on:
+      - elasticsearch
+    networks:
+      - zylin-network
+
+  # Backup Service (runs scheduled backups)
+  backup:
+    image: postgres:15-alpine
+    container_name: zylin-backup
+    restart: unless-stopped
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=zylin
+      - DB_USER=zylin_user
+      - DB_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - BACKUP_DIR=/backups
+      - RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+      - S3_BUCKET=${BACKUP_S3_BUCKET:-}
+      - S3_PREFIX=backups
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
+    volumes:
+      - backup_data:/backups
+      - ./scripts:/scripts:ro
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - zylin-network
+    entrypoint: /bin/sh
+    command: >
+      -c "
+      apk add --no-cache aws-cli redis bash &&
+      echo '0 2 * * * /scripts/backup-postgres.sh >> /var/log/backup.log 2>&1' > /etc/crontabs/root &&
+      echo '0 3 * * * /scripts/backup-redis.sh >> /var/log/backup.log 2>&1' > /etc/crontabs/root &&
+      echo 'Backup service started. Running daily at 2 AM (Postgres) and 3 AM (Redis)' &&
+      crond -f -l 2
+      "
+
 volumes:
   postgres_data:
   redis_data:
   prometheus_data:
   grafana_data:
+  backup_data:
+  elasticsearch_data:
+  fluentd_data:
 
 networks:
   zylin-network:

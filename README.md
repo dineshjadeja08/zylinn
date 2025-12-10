@@ -17,8 +17,10 @@ The agent joins a LiveKit room, listens to caller audio, transcribes it, generat
 - **Real-time Voice Processing**: Streaming audio pipeline with minimal latency
 - **Multiple Provider Support**: 
   - STT: AssemblyAI, Whisper, or Mock
-  - LLM: OpenAI GPT-4
-  - TTS: ElevenLabs, Azure, gTTS, or Mock
+  - LLM: OpenAI GPT-4o-mini (optimized for speed)
+  - **TTS: ElevenLabs** (production-quality neural voices) ⭐ **NEW**
+  - TTS Fallback: Azure, gTTS, or Mock
+- **Production-Ready TTS**: ElevenLabs integration with 16kHz PCM streaming
 - **LiveKit Integration**: Full WebRTC support for telephony and web calls
 - **Database Persistence**: All transcripts and responses saved to SQLite/PostgreSQL
 - **Mock Adapters**: Test the entire system without external API keys

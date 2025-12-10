@@ -68,23 +68,52 @@ class ElevenLabsTTSAdapter(TTSAdapter):
         try:
             self.logger.info("tts_request", text_length=len(text), provider="elevenlabs")
             
-            # ElevenLabs streaming is synchronous, wrap in thread
-            audio_stream = await asyncio.to_thread(
-                self.generate_func,
-                text=text,
-                voice=self.voice_id,
-                model="eleven_monolingual_v1",
-                stream=True,
-                api_key=self.api_key
-            )
-            
-            for chunk in audio_stream:
-                yield chunk
-            
-            self.logger.info("tts_stream_complete")
+            # Use ElevenLabs Python SDK with proper streaming
+            try:
+                from elevenlabs.client import ElevenLabs
+                from elevenlabs import stream as elevenlabs_stream
+                
+                client = ElevenLabs(api_key=self.api_key)
+                
+                # Generate audio with streaming enabled
+                # ElevenLabs outputs PCM 16kHz by default when using stream
+                audio_generator = client.generate(
+                    text=text,
+                    voice=self.voice_id,
+                    model="eleven_turbo_v2",  # Fastest model for real-time
+                    stream=True,
+                    output_format="pcm_16000"  # 16kHz PCM for LiveKit
+                )
+                
+                # Stream audio chunks
+                chunk_count = 0
+                for chunk in audio_generator:
+                    if chunk:
+                        yield chunk
+                        chunk_count += 1
+                
+                self.logger.info("tts_stream_complete", chunks=chunk_count)
+                
+            except ImportError:
+                # Fallback to older elevenlabs API
+                self.logger.warning("using_legacy_elevenlabs_api")
+                audio_stream = await asyncio.to_thread(
+                    self.generate_func,
+                    text=text,
+                    voice=self.voice_id,
+                    model="eleven_turbo_v2",
+                    stream=True,
+                    api_key=self.api_key
+                )
+                
+                for chunk in audio_stream:
+                    yield chunk
+                
+                self.logger.info("tts_stream_complete")
             
         except Exception as e:
-            self.logger.error("tts_stream_failed", error=str(e))
+            self.logger.error("tts_stream_failed", error=str(e), voice_id=self.voice_id)
+            # Re-raise to allow fallback handling at higher level
             raise
     
     async def close(self):
