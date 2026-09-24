@@ -86,9 +86,11 @@ async def get_api_key(x_api_key: Optional[str] = Header(None)) -> str:
     return x_api_key
 
 
+from database import get_db
+
 async def get_current_customer(
     api_key: str = Depends(get_api_key),
-    db: Session = Depends(lambda: None)  # Will be injected
+    db: Session = Depends(get_db)
 ):
     """
     Validate API key and return customer information.
@@ -136,7 +138,7 @@ async def get_current_customer(
 
 async def get_optional_customer(
     x_api_key: Optional[str] = Header(None),
-    db: Session = Depends(lambda: None)
+    db: Session = Depends(get_db)
 ) -> Optional["Customer"]:  # type: ignore
     """
     Optional authentication - returns customer if API key is provided, None otherwise.
@@ -236,7 +238,7 @@ def decode_user_token(token: str) -> Optional[dict]:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Security(security),
-    db: Session = Depends(lambda: None)
+    db: Session = Depends(get_db)
 ):
     """
     Get current authenticated user from JWT token.

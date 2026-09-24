@@ -1,29 +1,18 @@
-FROM node:18-alpine as build
-
+FROM node:20-alpine AS deps
 WORKDIR /app
+COPY package.json ./
+RUN npm install
 
-# Copy package files
-COPY package*.json ./
-
-# Install dependencies
-RUN npm ci --only=production
-
-# Copy source files
-COPY public ./public
-COPY src ./src
-
-# Build the app
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
 RUN npm run build
 
-# Production stage - serve with nginx
-FROM nginx:alpine
-
-# Copy built assets from build stage
-COPY --from=build /app/build /usr/share/nginx/html
-
-# Copy nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-EXPOSE 80
-
-CMD ["nginx", "-g", "daemon off;"]
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+EXPOSE 3000
+CMD ["node", "server.js"]

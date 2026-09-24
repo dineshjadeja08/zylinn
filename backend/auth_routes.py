@@ -30,24 +30,13 @@ from auth import (
     create_user_access_token,
     get_current_user
 )
-from email import email_service
+from email_service import email_service
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
-# Initialize database
-db_manager = DatabaseManager()
-
-
-# Dependency for database sessions
-def get_db():
-    """Dependency to get database session"""
-    session = db_manager.get_session()
-    try:
-        yield session
-    finally:
-        session.close()
+from database import get_db
 
 
 # Request/Response models
@@ -139,12 +128,11 @@ async def signup(
         # Create customer account (default to free plan)
         customer = create_customer(
             session=db,
-            customer_name=request.company_name,
+            company_name=request.company_name,
             email=request.email,
             api_key_hash=api_key_hash,
             plan_type="free",
-            max_calls_per_month=100,
-            max_minutes_per_call=10
+            max_calls_per_month=100
         )
         
         # Hash password

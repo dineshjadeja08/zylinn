@@ -29,6 +29,13 @@ from models import (
 )
 from auth import get_current_customer, require_permission
 from auth_routes import router as auth_router
+from routers.agents import router as agents_router
+from routers.knowledge import router as knowledge_router
+from routers.telephony import router as telephony_router
+from routers.billing import router as billing_router
+from routers.services import router as services_router
+from routers.calls import router as calls_router
+from routers.appointments import router as appointments_router
 
 # Load environment variables
 load_dotenv()
@@ -92,8 +99,15 @@ app = FastAPI(
     version="0.2.0"
 )
 
-# Include authentication router
+# Include all routers
 app.include_router(auth_router)
+app.include_router(agents_router)
+app.include_router(knowledge_router)
+app.include_router(telephony_router)
+app.include_router(billing_router)
+app.include_router(services_router)
+app.include_router(calls_router)
+app.include_router(appointments_router)
 
 # CORS middleware
 ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
@@ -106,18 +120,8 @@ app.add_middleware(
 )
 
 # Initialize database
-db_manager = DatabaseManager()
+from database import get_db, db_manager
 db_manager.create_tables()
-
-
-# Dependency for database sessions
-def get_db():
-    """Dependency to get database session"""
-    session = db_manager.get_session()
-    try:
-        yield session
-    finally:
-        session.close()
 
 
 # Pydantic models for API
@@ -215,22 +219,131 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check"""
-    try:
-        # Test database connection
-        session = db_manager.get_session()
-        session.execute("SELECT 1")
-        session.close()
-        db_status = "healthy"
-    except Exception as e:
-        logger.error("health_check_db_failed", error=str(e))
-        db_status = f"unhealthy: {str(e)}"
+    """
+    Comprehensive readiness check for all service dependencies.
     
-    return {
-        "status": "healthy" if db_status == "healthy" else "degraded",
-        "database": db_status,
-        "timestamp": datetime.utcnow().isoformat()
+    Checks: API, PostgreSQL, Redis, LiveKit, STT provider, TTS provider,
+            LLM provider, Telephony provider, Messaging provider, Billing provider.
+    
+    IMPORTANT: Never exposes credentials, API keys, or full error messages.
+    Returns 200 if all critical services are healthy, 503 if any critical service is down.
+    """
+    import time
+    checks = {}
+    overall_healthy = True
+    
+    # 1. Database (PostgreSQL)
+    t = time.time()
+    try:
+        from sqlalchemy import text
+        session = db_manager.get_session()
+        session.execute(text("SELECT 1"))
+        session.close()
+        checks["postgresql"] = {"status": "healthy", "latency_ms": round((time.time() - t) * 1000, 1)}
+    except Exception as e:
+        checks["postgresql"] = {"status": "unhealthy", "error": "connection_failed"}
+        overall_healthy = False
+
+    # 2. Redis
+    t = time.time()
+    try:
+        import redis as redis_lib
+        r = redis_lib.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), socket_timeout=2)
+        r.ping()
+        checks["redis"] = {"status": "healthy", "latency_ms": round((time.time() - t) * 1000, 1)}
+    except Exception:
+        checks["redis"] = {"status": "unhealthy", "error": "connection_failed"}
+        overall_healthy = False
+
+    # 3. STT provider
+    stt_provider = os.getenv("STT_PROVIDER", "sarvam")
+    stt_key_present = bool(os.getenv("SARVAM_API_KEY") or os.getenv("DEEPGRAM_API_KEY"))
+    checks["stt"] = {
+        "status": "configured" if stt_key_present else "missing_credentials",
+        "provider": stt_provider,
+        "key_present": stt_key_present,
     }
+    if not stt_key_present:
+        overall_healthy = False
+
+    # 4. TTS provider
+    tts_provider = os.getenv("TTS_PROVIDER", "sarvam")
+    tts_key_present = bool(os.getenv("SARVAM_API_KEY") or os.getenv("ELEVENLABS_API_KEY"))
+    checks["tts"] = {
+        "status": "configured" if tts_key_present else "missing_credentials",
+        "provider": tts_provider,
+        "key_present": tts_key_present,
+    }
+    if not tts_key_present:
+        overall_healthy = False
+
+    # 5. LLM provider
+    llm_provider = os.getenv("LLM_PROVIDER", "openai")
+    llm_key_present = bool(os.getenv("OPENAI_API_KEY"))
+    checks["llm"] = {
+        "status": "configured" if llm_key_present else "missing_credentials",
+        "provider": llm_provider,
+        "key_present": llm_key_present,
+    }
+    if not llm_key_present:
+        overall_healthy = False
+
+    # 6. Telephony provider
+    telephony_provider = os.getenv("TELEPHONY_PROVIDER", "exotel")
+    telephony_key_present = bool(os.getenv("EXOTEL_API_KEY") or os.getenv("TWILIO_ACCOUNT_SID"))
+    checks["telephony"] = {
+        "status": "configured" if telephony_key_present else "missing_credentials",
+        "provider": telephony_provider,
+        "key_present": telephony_key_present,
+    }
+    # Telephony is non-critical for browser-only mode
+    if not telephony_key_present:
+        checks["telephony"]["status"] = "degraded_phone_calls_disabled"
+
+    # 7. Messaging provider (WhatsApp)
+    messaging_provider = os.getenv("MESSAGING_PROVIDER", "meta")
+    messaging_key_present = bool(os.getenv("META_WHATSAPP_TOKEN") or os.getenv("TWILIO_AUTH_TOKEN"))
+    checks["messaging"] = {
+        "status": "configured" if messaging_key_present else "missing_credentials",
+        "provider": messaging_provider,
+        "key_present": messaging_key_present,
+    }
+    if not messaging_key_present:
+        checks["messaging"]["status"] = "degraded_whatsapp_disabled"
+
+    # 8. Billing provider
+    billing_provider = os.getenv("BILLING_PROVIDER", "razorpay")
+    billing_key_present = bool(os.getenv("RAZORPAY_KEY_ID") or os.getenv("STRIPE_SECRET_KEY"))
+    checks["billing"] = {
+        "status": "configured" if billing_key_present else "missing_credentials",
+        "provider": billing_provider,
+        "key_present": billing_key_present,
+    }
+    if not billing_key_present:
+        checks["billing"]["status"] = "degraded_billing_disabled"
+
+    # 9. LiveKit
+    lk_url = os.getenv("LIVEKIT_URL", "")
+    lk_key_present = bool(lk_url and os.getenv("LIVEKIT_API_KEY") and os.getenv("LIVEKIT_API_SECRET"))
+    checks["livekit"] = {
+        "status": "configured" if lk_key_present else "missing_credentials",
+        "url_configured": bool(lk_url),
+        "credentials_present": lk_key_present,
+    }
+    if not lk_key_present:
+        overall_healthy = False
+
+    status_code = 200 if overall_healthy else 503
+    response_body = {
+        "status": "healthy" if overall_healthy else "degraded",
+        "checks": checks,
+        "timestamp": datetime.utcnow().isoformat(),
+        "environment": os.getenv("ENVIRONMENT", "development"),
+    }
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=response_body, status_code=status_code)
+
 
 
 @app.get("/calls", response_model=List[CallRecordResponse])

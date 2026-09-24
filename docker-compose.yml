@@ -1,9 +1,10 @@
-version: '3.8'
+# Docker Compose — Zylinn V1 India-First Stack
+# Remove `version` field (deprecated in Compose spec)
 
 services:
-  # PostgreSQL Database
+  # PostgreSQL Database (with pgvector)
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: zylin-postgres
     restart: unless-stopped
     environment:
@@ -58,6 +59,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - API_KEY_SALT=${API_KEY_SALT}
+      # V1 Provider selection
+      - TELEPHONY_PROVIDER=exotel
+      - MESSAGING_PROVIDER=meta
+      - BILLING_PROVIDER=razorpay
     env_file:
       - .env.production
     depends_on:
@@ -94,6 +99,11 @@ services:
       - DATABASE_URL=postgresql://zylin_user:${DB_PASSWORD}@postgres:5432/zylin
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # V1 India-first providers (replacing legacy Deepgram/ElevenLabs/Azure)
+      - STT_PROVIDER=sarvam
+      - TTS_PROVIDER=sarvam
+      - LLM_PROVIDER=openai
+      # Credentials loaded from env_file below
     env_file:
       - .env.production
     depends_on:
@@ -113,6 +123,7 @@ services:
         fluentd-address: localhost:24224
         tag: agent
         fluentd-async: "true"
+
 
   # Nginx reverse proxy
   nginx:

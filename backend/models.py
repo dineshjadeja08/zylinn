@@ -34,6 +34,7 @@ class Customer(Base):
     
     status = Column(String(50), nullable=False, default="active")  # active, suspended, cancelled
     
+    last_call_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -41,6 +42,8 @@ class Customer(Base):
     users = relationship("User", back_populates="customer", cascade="all, delete-orphan")
     usage_logs = relationship("UsageLog", back_populates="customer", cascade="all, delete-orphan")
     webhook_configs = relationship("WebhookConfig", back_populates="customer", cascade="all, delete-orphan")
+    agent_configs = relationship("AgentConfig", back_populates="customer", cascade="all, delete-orphan")
+    service_catalog = relationship("ServiceCatalog", back_populates="customer", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Customer(company='{self.company_name}', plan='{self.plan_type}')>"
@@ -59,8 +62,14 @@ class UsageLog(Base):
     duration_seconds = Column(Float)
     stt_characters = Column(Integer)
     llm_tokens = Column(Integer)
-    tts_characters = Column(Integer)
+    tts_characters = Column(Integer, nullable=True)
     cost_usd = Column(DECIMAL(10, 4))
+    
+    stt_provider = Column(String(50), nullable=True)
+    tts_provider = Column(String(50), nullable=True)
+    stt_cost_usd = Column(DECIMAL(10, 6), nullable=True)
+    tts_cost_usd = Column(DECIMAL(10, 6), nullable=True)
+    llm_cost_usd = Column(DECIMAL(10, 6), nullable=True)
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     
@@ -92,6 +101,60 @@ class WebhookConfig(Base):
     
     def __repr__(self):
         return f"<WebhookConfig(url='{self.webhook_url[:50]}...')>"
+
+
+class AgentConfig(Base):
+    """
+    Per-tenant AI receptionist configuration.
+    Each tenant can have one active receptionist persona.
+    """
+    __tablename__ = "agent_configs"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    config_id = Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.customer_id"), nullable=False, index=True)
+    
+    name = Column(String(200), nullable=False)
+    persona_description = Column(Text, nullable=True)
+    languages = Column(ARRAY(String), nullable=False, default=["en"])  # e.g. ["ta", "en"]
+    voice_id = Column(String(200), nullable=True)
+    tts_provider = Column(String(50), nullable=False, default="elevenlabs")
+    stt_provider = Column(String(50), nullable=False, default="assemblyai")
+    greeting_message = Column(Text, nullable=True)
+    system_prompt_override = Column(Text, nullable=True)  # NULL = use default template
+    working_hours = Column(Text, nullable=True)  # JSON string: {"mon-fri": "09:00-18:00"}
+    tools_enabled = Column(ARRAY(String), nullable=False, default=["appointment"])  # appointment, lookup_service, transfer
+    is_active = Column(Boolean, nullable=False, default=True)
+    
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    customer = relationship("Customer", back_populates="agent_configs")
+    
+    def __repr__(self):
+        return f"<AgentConfig(name='{self.name}', customer_id='{self.customer_id}')>"
+
+
+class ServiceCatalog(Base):
+    """
+    Service catalog for a tenant — used by the lookup_service agent tool.
+    """
+    __tablename__ = "service_catalog"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.customer_id"), nullable=False, index=True)
+    service_name = Column(String(300), nullable=False)
+    description = Column(Text, nullable=True)
+    price_inr = Column(DECIMAL(10, 2), nullable=True)
+    duration_minutes = Column(Integer, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    customer = relationship("Customer", back_populates="service_catalog")
+    
+    def __repr__(self):
+        return f"<ServiceCatalog(name='{self.service_name}', price='{self.price_inr}')>"
 
 
 class User(Base):
@@ -159,6 +222,15 @@ class CallRecord(Base):
     transcripts = relationship("TranscriptChunk", back_populates="call", cascade="all, delete-orphan")
     replies = relationship("AgentReply", back_populates="call", cascade="all, delete-orphan")
     appointments = relationship("Appointment", back_populates="call", cascade="all, delete-orphan")
+    
+    call_type = Column(String(20), nullable=False, default='web')
+    caller_number = Column(String(50), nullable=True)
+    agent_config_id = Column(Integer, nullable=True)
+    recording_url = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    call_cost_usd = Column(DECIMAL(10, 4), nullable=True)
+    transfer_target = Column(String(100), nullable=True)
+    transfer_at = Column(DateTime, nullable=True)
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -256,6 +328,10 @@ class Appointment(Base):
     
     # Relationships
     call = relationship("CallRecord", back_populates="appointments")
+    
+    appointment_uuid = Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
+    reschedule_count = Column(Integer, nullable=False, default=0)
+    whatsapp_confirmation_sent = Column(Boolean, nullable=False, default=False)
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -486,22 +562,19 @@ def update_appointment_status(
 # Customer management helper functions
 def create_customer(
     session: Session,
-    customer_name: str,
+    company_name: str,
     email: str,
     api_key_hash: str,
     plan_type: str = "free",
-    max_calls_per_month: int = 100,
-    max_minutes_per_call: int = 10
+    max_calls_per_month: int = 100
 ) -> Customer:
     """Create a new customer"""
     customer = Customer(
-        customer_name=customer_name,
+        company_name=company_name,
         email=email,
         api_key_hash=api_key_hash,
         plan_type=plan_type,
-        max_calls_per_month=max_calls_per_month,
-        max_minutes_per_call=max_minutes_per_call,
-        is_active=True
+        max_calls_per_month=max_calls_per_month
     )
     session.add(customer)
     session.commit()
@@ -535,7 +608,7 @@ def log_usage(
     customer_id: str,
     call_id: str,
     duration_seconds: float,
-    tokens_used: int = 0,
+    llm_tokens: int = 0,
     cost_usd: float = 0.0
 ) -> UsageLog:
     """Log usage for billing"""
@@ -543,7 +616,7 @@ def log_usage(
         customer_id=customer_id,
         call_id=call_id,
         duration_seconds=duration_seconds,
-        tokens_used=tokens_used,
+        llm_tokens=llm_tokens,
         cost_usd=cost_usd
     )
     session.add(usage)
@@ -559,7 +632,7 @@ def get_customer_usage_logs(
 ):
     """Get usage logs for a customer"""
     query = session.query(UsageLog).filter(UsageLog.customer_id == customer_id)
-    query = query.order_by(UsageLog.timestamp.desc())
+    query = query.order_by(UsageLog.created_at.desc())
     if limit:
         query = query.limit(limit)
     return query.all()
